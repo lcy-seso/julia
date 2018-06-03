@@ -6155,3 +6155,16 @@ struct T27269{X, Y <: Vector{X}}
     v::Vector{Y}
 end
 @test T27269([[1]]) isa T27269{Int, Vector{Int}}
+
+# issue #27365
+mutable struct foo27365
+  x::Float64
+  foo27365() = new()
+end
+
+function baz27365()
+  data = foo27365()
+  return data.x
+end
+
+@test isa(baz27365(), Float64)
