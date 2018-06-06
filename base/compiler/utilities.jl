@@ -178,7 +178,16 @@ exprtype(@nospecialize(x), state) = exprtype(x, state.src, state.sp)
 
 function exprtype(@nospecialize(x), src, spvals::SimpleVector)
     if isa(x, Expr)
-        return (x::Expr).typ
+        if x.head === :static_parameter
+            return sparam_type(spvals[x.args[1]])
+        elseif x.head === :boundscheck
+            return Bool
+        elseif x.head === :copyast
+            return exprtype(x.args[1], src, spvals)
+        end
+        println(x)
+        error()
+        #return (x::Expr).typ
     elseif isa(x, SlotNumber)
         return src.slottypes[(x::SlotNumber).id]
     elseif isa(x, TypedSlot)

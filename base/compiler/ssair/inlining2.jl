@@ -368,7 +368,7 @@ function ir_inline_item!(compact::IncrementalCompact, idx::Int, argexprs::Vector
         if length(pn.edges) == 1
             return_value = pn.values[1]
         else
-            return_value = insert_node_here!(compact, pn, stmt.typ, compact.result_lines[idx])
+            return_value = insert_node_here!(compact, pn, compact_exprtype(compact, SSAValue(idx)), compact.result_lines[idx])
         end
     end
     return_value
@@ -397,7 +397,6 @@ function ir_inline_unionsplit!(compact::IncrementalCompact, idx::Int,
             a <: m && continue
             # Generate isa check
             isa_expr = Expr(:call, isa, argexprs[i], m)
-            isa_expr.typ = Bool
             ssa = insert_node_here!(compact, isa_expr, Bool, line)
             if cond === true
                 cond = ssa
@@ -438,7 +437,6 @@ function ir_inline_unionsplit!(compact::IncrementalCompact, idx::Int,
     # We're now in the fall through block, decide what to do
     if item.fully_covered
         e = Expr(:call, GlobalRef(Core, :throw), fatal_type_bound_error)
-        e.typ = Union{}
         insert_node_here!(compact, e, Union{}, line)
         insert_node_here!(compact, ReturnNode(), Union{}, line)
         finish_current_bb!(compact)
@@ -558,8 +556,7 @@ function rewrite_apply_exprargs!(inserter, exprtype, argexprs::Vector{Any})
         for i = 1:length(t.parameters)
             # Insert a getfield call here
             new_call = Expr(:call, Core.getfield, arg, i)
-            new_call.typ = getfield_tfunc(tupT, Const(i))
-            push!(new_argexprs, inserter(new_call, new_call.typ))
+            push!(new_argexprs, inserter(new_call, getfield_tfunc(tupT, Const(i))))
         end
     end
     argexprs = new_argexprs
@@ -738,6 +735,8 @@ function assemble_inline_todo!(ir::IRCode, linetable::Vector{LineInfoNode}, sv::
         has_free_typevars(ft) && continue
         isa(ft, Conditional) && (ft = Bool)
         f = singleton_type(ft)
+        # TODO: llvmcall can contain other calls as arguments, so this code doesn't work on it
+        f === Core.Intrinsics.llvmcall && continue
 
         atypes = Vector{Any}(undef, length(stmt.args))
         atypes[1] = ft
@@ -750,7 +749,7 @@ function assemble_inline_todo!(ir::IRCode, linetable::Vector{LineInfoNode}, sv::
         ok || continue
 
         # Check if we match any of the early inliners
-        res = early_inline_special_case(ir, f, ft, stmt, atypes, sv)
+        res = early_inline_special_case(ir, f, ft, stmt, atypes, sv, ir.types[idx])
         if res !== nothing
             ir.stmts[idx] = res
             continue
@@ -953,8 +952,8 @@ end
 
 function mk_tuplecall!(compact::IncrementalCompact, args::Vector{Any}, line_idx::Int)
     e = Expr(:call, TOP_TUPLE, args...)
-    e.typ = tuple_tfunc(Tuple{Any[widenconst(compact_exprtype(compact, args[i])) for i in 1:length(args)]...})
-    return insert_node_here!(compact, e, e.typ, line_idx)
+    etyp = tuple_tfunc(Tuple{Any[widenconst(compact_exprtype(compact, args[i])) for i in 1:length(args)]...})
+    return insert_node_here!(compact, e, etyp, line_idx)
 end
 
 function linear_inline_eligible(ir::IRCode)
@@ -997,7 +996,8 @@ function compute_invoke_data(@nospecialize(atypes), argexprs::Vector{Any}, sv::O
     return svec(f, ft, atypes, argexprs, invoke_data)
 end
 
-function early_inline_special_case(ir::IRCode, @nospecialize(f), @nospecialize(ft), e::Expr, atypes::Vector{Any}, sv::OptimizationState)
+function early_inline_special_case(ir::IRCode, @nospecialize(f), @nospecialize(ft), e::Expr, atypes::Vector{Any}, sv::OptimizationState,
+                                   @nospecialize(etype))
     if (f === typeassert || ft ⊑ typeof(typeassert)) && length(atypes) == 3
         # typeassert(x::S, T) => x, when S<:T
         a3 = atypes[3]
@@ -1010,8 +1010,8 @@ function early_inline_special_case(ir::IRCode, @nospecialize(f), @nospecialize(f
     end
     # special-case inliners for known pure functions that compute types
     if sv.params.inlining
-        if isa(e.typ, Const) # || isconstType(e.typ)
-            val = e.typ.val
+        if isa(etype, Const) # || isconstType(etype)
+            val = etype.val
             if (f === apply_type || f === fieldtype || f === typeof || f === (===) ||
                 f === Core.sizeof || f === isdefined ||
                 istopfunction(f, :typejoin) ||
@@ -1021,7 +1021,7 @@ function early_inline_special_case(ir::IRCode, @nospecialize(f), @nospecialize(f
                 (f === Core.kwfunc && length(atypes) == 2) ||
                 (is_inlineable_constant(val) &&
                  (contains_is(_PURE_BUILTINS, f) ||
-                  (f === getfield && effect_free(e, ir, ir.spvals, false)) ||
+                  (f === getfield && effect_free(e, ir, ir.spvals, false, etype)) ||
                   (isa(f, IntrinsicFunction) && is_pure_intrinsic_optim(f)))))
                 return quoted(val)
             end

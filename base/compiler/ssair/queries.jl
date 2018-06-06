@@ -3,7 +3,7 @@
 """
 Determine whether a statement is side-effect-free, i.e. may be removed if it has no uses.
 """
-function stmt_effect_free(@nospecialize(stmt), src, spvals)
+function stmt_effect_free(@nospecialize(stmt), src::IncrementalCompact, spvals::SimpleVector)
     isa(stmt, Union{PiNode, PhiNode}) && return true
     isa(stmt, Union{ReturnNode, GotoNode, GotoIfNot}) && return false
     isa(stmt, GlobalRef) && return isdefined(stmt.mod, stmt.name)
@@ -13,10 +13,11 @@ function stmt_effect_free(@nospecialize(stmt), src, spvals)
         e = stmt::Expr
         head = e.head
         if head === :static_parameter
+            etyp = sparam_type(spvals[e.args[1]])
             # if we aren't certain enough about the type, it might be an UndefVarError at runtime
-            return isa(e.typ, Const) || issingletontype(widenconst(e.typ))
+            return isa(etyp, Const) || issingletontype(widenconst(etyp))
         end
-        (e.typ === Bottom) && return false
+        #(e.typ === Bottom) && return false
         ea = e.args
         if head === :call
             f = exprtype(ea[1], src, spvals)
